@@ -178,6 +178,21 @@ export default function Page() {
     if (error) showToast("Could not save reorder level");
   }
 
+  async function deleteItem(id: string) {
+    if (!confirm("Kya aap is item ko inventory se delete karna chahte hain?")) return;
+    setItems((prev) => prev.filter((x) => x.id !== id));
+    if (!supabaseConfigured) {
+      showToast("Item deleted locally");
+      return;
+    }
+    const { error } = await supabase.from("items").delete().eq("id", id);
+    if (error) {
+      showToast("Could not delete item from database");
+    } else {
+      showToast("Item deleted successfully");
+    }
+  }
+
   async function commitSupplierRates(itemId: string, supplierRates: Item["supplier_rates"]) {
     setItems((prev) => prev.map((x) => (x.id === itemId ? { ...x, supplier_rates: supplierRates } : x)));
     if (!supabaseConfigured) {
@@ -314,7 +329,7 @@ export default function Page() {
       showToast("Enter an item name");
       return;
     }
-lg    const base = {
+    const base = {
       name,
       hsn: addForm.hsn.trim(),
       category: addForm.category,
@@ -363,7 +378,6 @@ lg    const base = {
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
         
-        // Convert sheet to JSON rows
         const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
         
         let importedCount = 0;
@@ -591,7 +605,16 @@ lg    const base = {
                             {it.times_ordered ? " · ordered " + it.times_ordered + "x before" : ""}
                           </div>
                         </div>
-                        <div className={"status " + st.cls}>{st.label}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div className={"status " + st.cls}>{st.label}</div>
+                          <button
+                            onClick={() => deleteItem(it.id)}
+                            style={{ background: "#3b1c1c", color: "#f87171", border: "1px solid #5c2727", padding: "4px 8px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}
+                            title="Delete Item"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                       <div className="item-bottom">
                         <div className="stockctl">
@@ -916,110 +939,3 @@ lg    const base = {
         <div className="dlg-body">
           <div>
             {sortedSuppliers.length === 0 && (
-              <div style={{ fontSize: 12.5, color: "var(--ink-soft)", padding: "6px 0" }}>
-                No suppliers yet — add one below to start comparing.
-              </div>
-            )}
-            {sortedSuppliers.map((s) => (
-              <div className="raterow" key={s.id}>
-                <div className="raterow-name">{s.name}</div>
-                <div className="raterow-inputwrap">
-                  <span className="rs">₹</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    className="raterow-input"
-                    placeholder="—"
-                    value={rateDialogState[s.id] || ""}
-                    onChange={(e) => setRateDialogState((prev) => ({ ...prev, [s.id]: e.target.value }))}
-                  />
-                </div>
-                <div className="raterow-tag">
-                  {s.id === bestDialogSid && <span className="status ok" style={{ fontSize: 9.5 }}>Cheapest</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="fieldrow" style={{ alignItems: "flex-end" }}>
-            <div className="field" style={{ flex: 1 }}>
-              <label>Add a supplier</label>
-              <input
-                placeholder="e.g. Metro Cash & Carry"
-                value={rateNewSupplier}
-                onChange={(e) => setRateNewSupplier(e.target.value)}
-              />
-            </div>
-            <button
-              className="btn ghost"
-              onClick={async () => {
-                const rec = await addSupplier(rateNewSupplier);
-                if (rec) {
-                  setRateNewSupplier("");
-                  setRateDialogState((prev) => ({ ...prev, [rec.id]: "" }));
-                }
-              }}
-            >
-              Add
-            </button>
-          </div>
-          <div className="dlg-actions">
-            <button className="btn ghost" onClick={() => rateDialogRef.current?.close()}>
-              Cancel
-            </button>
-            <button className="btn primary" onClick={saveRates}>
-              Save rates
-            </button>
-          </div>
-        </div>
-      </dialog>
-
-      <dialog ref={supplierDialogRef}>
-        <div className="dlg-head">Suppliers</div>
-        <div className="dlg-body">
-          <div>
-            {sortedSuppliers.length === 0 && (
-              <div style={{ fontSize: 12.5, color: "var(--ink-soft)", padding: "6px 0" }}>
-                No suppliers yet — add your first one below.
-              </div>
-            )}
-            {sortedSuppliers.map((s) => (
-              <div className="supplier-row" key={s.id}>
-                <div className="nm">{s.name}</div>
-                <button className="supplier-remove" onClick={() => removeSupplier(s.id)}>
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="fieldrow" style={{ alignItems: "flex-end" }}>
-            <div className="field" style={{ flex: 1 }}>
-              <label>Add a supplier</label>
-              <input
-                placeholder="e.g. Metro Cash & Carry"
-                value={supplierNewName}
-                onChange={(e) => setSupplierNewName(e.target.value)}
-              />
-            </div>
-            <button
-              className="btn ghost"
-              onClick={async () => {
-                const rec = await addSupplier(supplierNewName);
-                if (rec) setSupplierNewName("");
-              }}
-            >
-              Add
-            </button>
-          </div>
-          <div className="dlg-actions">
-            <button className="btn primary" style={{ flex: 1 }} onClick={() => supplierDialogRef.current?.close()}>
-              Done
-            </button>
-          </div>
-        </div>
-      </dialog>
-
-      <div className={"toast" + (toast ? " show" : "")}>{toast}</div>
-    </>
-  );
-}
