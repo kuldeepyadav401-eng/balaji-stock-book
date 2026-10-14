@@ -71,7 +71,6 @@ export default function BalajiStockBook() {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [activeTab, setActiveTab] = useState<'inventory' | 'orderList' | 'history' | 'upload'>('inventory');
   
-  // Upload State
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
   const handleStockChange = (id: string, delta: number) => {
@@ -86,7 +85,6 @@ export default function BalajiStockBook() {
     );
   };
 
-  // Handle simulated Excel / Bill Upload & parsing
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -94,7 +92,6 @@ export default function BalajiStockBook() {
     setUploadStatus(`Processing ${file.name}...`);
     
     setTimeout(() => {
-      // Mocking newly imported items from bill/excel
       const newItem: InventoryItem = {
         id: Date.now().toString(),
         skuCode: 'NEW-' + Math.floor(Math.random() * 1000),
