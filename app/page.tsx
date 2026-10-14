@@ -1,335 +1,874 @@
-'use client';
+"use client";
 
-import React, { useState, useMemo } from 'react';
-import { Search, Plus, Minus, ShoppingCart, FileText, Upload, CheckCircle2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase, supabaseConfigured } from "@/lib/supabase";
+import { CATEGORIES, CartItem, Item, Order, Supplier } from "@/lib/types";
 
-interface InventoryItem {
-  id: string;
-  skuCode: string;
-  name: string;
-  category: string;
-  hsn: string;
-  ordersBefore: number;
-  stock: number;
-  reorderAt: number;
-  price: number;
-  supplier: string;
+type Tab = "inventory" | "cart" | "history";
+
+function money(n: number) {
+  n = Number(n) || 0;
+  return "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }
 
-const INITIAL_ITEMS: InventoryItem[] = [
-  {
-    id: '1',
-    skuCode: '19735729',
-    name: 'PARLE G GOLD 68 756',
-    category: 'Biscuits & Cookies',
-    hsn: '19059020',
-    ordersBefore: 1,
-    stock: 4,
-    reorderAt: 24,
-    price: 8.33,
-    supplier: 'LOTS Wholesale',
-  },
-  {
-    id: '2',
-    skuCode: '31',
-    name: 'GODREJ NO 1 LIVE AND ALOE SOAP 43 G PK4',
-    category: 'Soap',
-    hsn: '340111',
-    ordersBefore: 1,
-    stock: 0,
-    reorderAt: 2,
-    price: 35.46,
-    supplier: 'LOTS Wholesale',
-  },
-  {
-    id: '3',
-    skuCode: '3930° 2828',
-    name: 'ALPENLIEBE JUZT JELLY STRAWBERRY 40 U PO',
-    category: 'Snacks & Candy',
-    hsn: '170490',
-    ordersBefore: 1,
-    stock: 0,
-    reorderAt: 5,
-    price: 48.18,
-    supplier: 'LOTS Wholesale',
-  },
-];
+function statusFor(it: Item) {
+  const stock = Number(it.stock) || 0;
+  const rl = Number(it.reorder_level) || 0;
+  if (stock <= 0) return { cls: "danger", label: "Out of stock" };
+  if (stock <= rl) return { cls: "warn", label: "Low stock" };
+  return { cls: "ok", label: "In stock" };
+}
 
-const CATEGORIES = [
-  'All',
-  'Soap (39)',
-  'Detergent & Cleaning (21)',
-  'Oral Care (13)',
-  'Shampoo & Hair (3)',
-  'Biscuits & Cookies (22)',
-  'Snacks & Candy',
-];
+function bestRate(it: Item, suppliers: Supplier[]) {
+  const supplierMap: Record<string, Supplier> = {};
+  suppliers.forEach((s) => (supplierMap[s.id] = s));
+  const rates = it.supplier_rates || {};
+  let bestId: string | null = null;
+  let bestVal = Infinity;
+  let comparedCount = 0;
+  Object.keys(rates).forEach((sid) => {
+    if (!supplierMap[sid]) return;
+    const r = rates[sid]?.rate;
+    if (typeof r === "number" && r > 0) {
+      comparedCount++;
+      if (r < bestVal) {
+        bestVal = r;
+        bestId = sid;
+      }
+    }
+  });
+  if (bestId) {
+    return {
+      rate: bestVal,
+      supplierId: bestId,
+      supplierName: supplierMap[bestId].name,
+      comparedCount,
+    };
+  }
+  return { rate: Number(it.rate) || 0, supplierId: null, supplierName: null, comparedCount: 0 };
+}
 
-export default function BalajiStockBook() {
-  const [items, setItems] = useState<InventoryItem[]>(INITIAL_ITEMS);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('All');
-  const [activeTab, setActiveTab] = useState<'inventory' | 'orderList' | 'history' | 'upload'>('inventory');
-  
-  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+export default function Page() {
+  const [items, setItems] = useState<Item[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [itemsLoaded, setItemsLoaded] = useState(false);
 
-  const handleStockChange = (id: string, delta: number) => {
-    setItems((prev) =>
-      prev.map((item) => {
-        if (item.id === id) {
-          const newStock = Math.max(0, item.stock + delta);
-          return { ...item, stock: newStock };
-        }
-        return item;
-      })
-    );
-  };
+  const [activeTab, setActiveTab] = useState<Tab>("inventory");
+  const [activeCat, setActiveCat] = useState("__all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [openOrderIds, setOpenOrderIds] = useState<Set<string>>(new Set());
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const [toast, setToast] = useState("");
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showToast(msg: string) {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 1800);
+  }
 
-    setUploadStatus(`Processing ${file.name}...`);
-    
-    setTimeout(() => {
-      const newItem: InventoryItem = {
-        id: Date.now().toString(),
-        skuCode: 'NEW-' + Math.floor(Math.random() * 1000),
-        name: file.name.toUpperCase().replace(/\.[^/.]+$/, ''),
-        category: 'Biscuits & Cookies',
-        hsn: '190590',
-        ordersBefore: 1,
-        stock: 50,
-        reorderAt: 10,
-        price: 120.00,
-        supplier: 'New Bill Supplier',
-      };
+  /* ---------------- dialogs ---------------- */
+  const addDialogRef = useRef<HTMLDialogElement>(null);
+  const rateDialogRef = useRef<HTMLDialogElement>(null);
+  const supplierDialogRef = useRef<HTMLDialogElement>(null);
 
-      setItems([newItem, ...items]);
-      setUploadStatus(`Successfully imported bill/items from ${file.name}! Added to Inventory.`);
-      setTimeout(() => setUploadStatus(null), 4000);
-    }, 1200);
-  };
+  const [addForm, setAddForm] = useState({
+    name: "",
+    hsn: "",
+    category: CATEGORIES[0],
+    rate: "",
+    stock: "0",
+    reorder: "3",
+  });
 
-  const filteredItems = useMemo(() => {
-    return items.filter((item) => {
-      const matchesSearch =
-        item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.skuCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.hsn.includes(searchQuery);
+  const [rateDialogItemId, setRateDialogItemId] = useState<string | null>(null);
+  const [rateDialogState, setRateDialogState] = useState<Record<string, string>>({});
+  const [rateNewSupplier, setRateNewSupplier] = useState("");
 
-      const matchesCategory =
-        selectedCategory === 'All' || item.category.toLowerCase().includes(selectedCategory.split(' ')[0].toLowerCase());
+  const [supplierNewName, setSupplierNewName] = useState("");
 
-      return matchesSearch && matchesCategory;
+  /* ---------------- data loading + realtime ---------------- */
+  useEffect(() => {
+    if (!supabaseConfigured) {
+      setItemsLoaded(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function fetchItems() {
+      const { data } = await supabase.from("items").select("*");
+      if (!cancelled) {
+        setItems((data as Item[]) || []);
+        setItemsLoaded(true);
+      }
+    }
+    async function fetchSuppliers() {
+      const { data } = await supabase.from("suppliers").select("*");
+      if (!cancelled) setSuppliers((data as Supplier[]) || []);
+    }
+    async function fetchCart() {
+      const { data } = await supabase.from("cart").select("*").eq("id", "current").maybeSingle();
+      if (!cancelled) setCart((data?.items as CartItem[]) || []);
+    }
+    async function fetchOrders() {
+      const { data } = await supabase
+        .from("orders")
+        .select("*")
+        .order("placed_at", { ascending: false })
+        .limit(50);
+      if (!cancelled) setOrders((data as unknown as Order[]) || []);
+    }
+
+    fetchItems();
+    fetchSuppliers();
+    fetchCart();
+    fetchOrders();
+
+    const channel = supabase
+      .channel("balaji-stock-book-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "items" }, fetchItems)
+      .on("postgres_changes", { event: "*", schema: "public", table: "suppliers" }, fetchSuppliers)
+      .on("postgres_changes", { event: "*", schema: "public", table: "cart" }, fetchCart)
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchOrders)
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  /* ---------------- category chips ---------------- */
+  const catCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    items.forEach((it) => (counts[it.category] = (counts[it.category] || 0) + 1));
+    return counts;
+  }, [items]);
+  const presentCats = CATEGORIES.filter((c) => catCounts[c]);
+
+  /* ---------------- filtered item list ---------------- */
+  const visibleItems = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    let rows = items.filter((it) => {
+      if (activeCat !== "__all" && it.category !== activeCat) return false;
+      if (term && !(it.name.toLowerCase().includes(term) || (it.hsn || "").includes(term))) return false;
+      return true;
     });
-  }, [items, searchQuery, selectedCategory]);
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
+  }, [items, activeCat, searchTerm]);
+
+  /* ---------------- item mutations ---------------- */
+  async function commitStock(it: Item, val: number) {
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, stock: val } : x)));
+    if (!supabaseConfigured) return;
+    const { error } = await supabase
+      .from("items")
+      .update({ stock: val, updated_at: new Date().toISOString() })
+      .eq("id", it.id);
+    if (error) showToast("Could not save stock — try again");
+  }
+
+  async function commitReorder(it: Item, val: number) {
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, reorder_level: val } : x)));
+    if (!supabaseConfigured) return;
+    const { error } = await supabase
+      .from("items")
+      .update({ reorder_level: val, updated_at: new Date().toISOString() })
+      .eq("id", it.id);
+    if (error) showToast("Could not save reorder level");
+  }
+
+  async function commitSupplierRates(itemId: string, supplierRates: Item["supplier_rates"]) {
+    setItems((prev) => prev.map((x) => (x.id === itemId ? { ...x, supplier_rates: supplierRates } : x)));
+    if (!supabaseConfigured) {
+      showToast("Rates saved (not synced — storage unavailable)");
+      return;
+    }
+    const { error } = await supabase
+      .from("items")
+      .update({ supplier_rates: supplierRates, updated_at: new Date().toISOString() })
+      .eq("id", itemId);
+    showToast(error ? "Could not save rates — try again" : "Rates saved");
+  }
+
+  /* ---------------- cart ---------------- */
+  async function writeCart(newItems: CartItem[]) {
+    setCart(newItems);
+    if (!supabaseConfigured) return;
+    const { error } = await supabase
+      .from("cart")
+      .upsert({ id: "current", items: newItems, updated_at: new Date().toISOString() });
+    if (error) showToast("Could not update order list");
+  }
+
+  function addToCart(it: Item) {
+    if (cart.some((c) => c.id === it.id)) {
+      showToast(it.name + " is already in the order list");
+      return;
+    }
+    const suggestedQty = Math.max(1, (Number(it.reorder_level) || 0) * 2 - (Number(it.stock) || 0));
+    const best = bestRate(it, suppliers);
+    const next = cart.concat([
+      {
+        id: it.id,
+        name: it.name,
+        rate: best.rate,
+        supplierId: best.supplierId,
+        supplierName: best.supplierName,
+        unit: it.unit || "EA",
+        qty: suggestedQty,
+      },
+    ]);
+    writeCart(next);
+    showToast(best.supplierName ? "Added — cheapest from " + best.supplierName : "Added to order list");
+  }
+  function removeFromCart(id: string) {
+    writeCart(cart.filter((c) => c.id !== id));
+  }
+  function changeCartQty(id: string, delta: number) {
+    writeCart(cart.map((c) => (c.id === id ? { ...c, qty: Math.max(1, (Number(c.qty) || 0) + delta) } : c)));
+  }
+  function setCartQty(id: string, val: string) {
+    writeCart(cart.map((c) => (c.id === id ? { ...c, qty: Math.max(1, Number(val) || 1) } : c)));
+  }
+
+  function buildOrderText(cartItems: CartItem[]) {
+    const groups: Record<string, CartItem[]> = {};
+    const order: string[] = [];
+    cartItems.forEach((c) => {
+      const key = c.supplierName || "Supplier not set";
+      if (!groups[key]) {
+        groups[key] = [];
+        order.push(key);
+      }
+      groups[key].push(c);
+    });
+    return order
+      .map((key) => key + ":\n" + groups[key].map((c) => "- " + c.name + "  x" + c.qty).join("\n"))
+      .join("\n\n");
+  }
+
+  async function copyOrder() {
+    const text =
+      "Order for Bala Ji Namkeen (" + new Date().toLocaleDateString("en-IN") + ")\n\n" + buildOrderText(cart);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Order list copied — paste it to your supplier");
+    } catch {
+      showToast("Could not copy — select the list manually");
+    }
+  }
+
+  async function placeOrder() {
+    if (cart.length === 0) return;
+    const total = cart.reduce((s, c) => s + (Number(c.qty) || 0) * (Number(c.rate) || 0), 0);
+    const orderDoc = { items: cart, placed_at: new Date().toISOString(), total: Math.round(total * 100) / 100 };
+    writeCart([]);
+    showToast("Order marked as placed");
+    if (supabaseConfigured) {
+      const { error } = await supabase.from("orders").insert(orderDoc);
+      if (error) showToast("Saved locally, but could not sync order history");
+    }
+  }
+
+  /* ---------------- suppliers ---------------- */
+  async function addSupplier(rawName: string): Promise<Supplier | null> {
+    const name = (rawName || "").trim();
+    if (!name) return null;
+    const dup = suppliers.find((s) => s.name.toLowerCase() === name.toLowerCase());
+    if (dup) {
+      showToast(name + " is already in your supplier list");
+      return dup;
+    }
+    if (!supabaseConfigured) {
+      const rec = { id: "local-" + Date.now(), name, added_at: new Date().toISOString() };
+      setSuppliers((prev) => prev.concat([rec]));
+      return rec;
+    }
+    const { data, error } = await supabase
+      .from("suppliers")
+      .insert({ name, added_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error || !data) {
+      showToast("Could not save supplier — try again");
+      return null;
+    }
+    const rec = data as Supplier;
+    setSuppliers((prev) => prev.concat([rec]));
+    return rec;
+  }
+
+  async function removeSupplier(id: string) {
+    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    if (!supabaseConfigured) return;
+    const { error } = await supabase.from("suppliers").delete().eq("id", id);
+    if (error) showToast("Could not remove supplier");
+  }
+
+  /* ---------------- add item dialog ---------------- */
+  function openAddItem() {
+    setAddForm({ name: "", hsn: "", category: CATEGORIES[0], rate: "", stock: "0", reorder: "3" });
+    addDialogRef.current?.showModal();
+  }
+  async function saveAddItem() {
+    const name = addForm.name.trim();
+    if (!name) {
+      showToast("Enter an item name");
+      return;
+    }
+    const base = {
+      name,
+      hsn: addForm.hsn.trim(),
+      category: addForm.category,
+      unit: "EA",
+      rate: Number(addForm.rate) || 0,
+      stock: Number(addForm.stock) || 0,
+      reorder_level: Number(addForm.reorder) || 0,
+      total_purchased_qty: 0,
+      total_purchased_amount: 0,
+      times_ordered: 0,
+      supplier_rates: {},
+      updated_at: new Date().toISOString(),
+    };
+    addDialogRef.current?.close();
+    if (!supabaseConfigured) {
+      setItems((prev) => prev.concat([{ ...base, id: "local-" + Date.now() } as Item]));
+      showToast("Added (not saved — storage unavailable)");
+      return;
+    }
+    const idGuess = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") + "-" + Date.now();
+    const { data, error } = await supabase
+      .from("items")
+      .insert({ ...base, id: idGuess })
+      .select()
+      .single();
+    if (error || !data) {
+      showToast("Could not save the new item");
+      return;
+    }
+    setItems((prev) => prev.concat([data as Item]));
+    showToast("Item added");
+  }
+
+  /* ---------------- rate compare dialog ---------------- */
+  function openRateDialog(it: Item) {
+    setRateDialogItemId(it.id);
+    const rates = it.supplier_rates || {};
+    const state: Record<string, string> = {};
+    suppliers.forEach((s) => {
+      const existing = rates[s.id]?.rate;
+      state[s.id] = typeof existing === "number" ? String(existing) : "";
+    });
+    setRateDialogState(state);
+    setRateNewSupplier("");
+    rateDialogRef.current?.showModal();
+  }
+  function bestRateDialogSupplierId() {
+    let bestId: string | null = null;
+    let bestVal = Infinity;
+    Object.keys(rateDialogState).forEach((sid) => {
+      const v = parseFloat(rateDialogState[sid]);
+      if (!isNaN(v) && v > 0 && v < bestVal) {
+        bestVal = v;
+        bestId = sid;
+      }
+    });
+    return bestId;
+  }
+  async function saveRates() {
+    const it = items.find((x) => x.id === rateDialogItemId);
+    if (!it) return;
+    const supplierRates: Item["supplier_rates"] = {};
+    Object.keys(rateDialogState).forEach((sid) => {
+      const v = parseFloat(rateDialogState[sid]);
+      if (!isNaN(v) && v > 0) supplierRates[sid] = { rate: v, updatedAt: new Date().toISOString() };
+    });
+    rateDialogRef.current?.close();
+    commitSupplierRates(it.id, supplierRates);
+  }
+
+  const currentItem = items.find((x) => x.id === rateDialogItemId);
+  const bestDialogSid = bestRateDialogSupplierId();
+  const sortedSuppliers = suppliers.slice().sort((a, b) => a.name.localeCompare(b.name));
+
+  const cartUnits = cart.reduce((s, c) => s + (Number(c.qty) || 0), 0);
+  const cartTotal = cart.reduce((s, c) => s + (Number(c.qty) || 0) * (Number(c.rate) || 0), 0);
 
   return (
-    <div className="min-h-screen bg-[#0f1115] text-gray-100 font-sans antialiased">
-      {/* Header */}
-      <header className="border-b border-gray-800 bg-[#161920] px-6 py-4 shadow-sm">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="bg-amber-600 text-white font-black px-3.5 py-2 rounded-lg text-lg tracking-wider shadow">
-              BJ
-            </div>
+    <>
+      <header className="top">
+        <div className="wrap">
+          <div className="brand">
+            <div className="mark">BJ</div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-                Bala Ji Stock Book
-              </h1>
-              <p className="text-xs text-gray-400">
-                Inventory & supplier ordering · seeded from LOTS Wholesale purchase history
-              </p>
+              <h1>Bala Ji Stock Book</h1>
+              <div className="sub">Inventory &amp; supplier ordering</div>
             </div>
           </div>
-
-          {/* Navigation Tabs including Upload */}
-          <div className="flex bg-[#1f242d] p-1 rounded-xl border border-gray-800 w-full md:w-auto flex-wrap gap-1">
-            <button
-              onClick={() => setActiveTab('inventory')}
-              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
-                activeTab === 'inventory' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Inventory
-            </button>
-            <button
-              onClick={() => setActiveTab('orderList')}
-              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
-                activeTab === 'orderList' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Order List
-            </button>
-            <button
-              onClick={() => setActiveTab('upload')}
-              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 ${
-                activeTab === 'upload' ? 'bg-amber-600 text-white shadow' : 'text-amber-400 hover:bg-amber-950/40'
-              }`}
-            >
-              <Upload className="h-3.5 w-3.5" /> Upload Bill / Excel
-            </button>
-            <button
-              onClick={() => setActiveTab('history')}
-              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
-                activeTab === 'history' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              History
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6">
-        {activeTab === 'inventory' ? (
-          <>
-            {/* Search Bar */}
-            <div className="relative mb-6">
-              <Search className="absolute left-4 top-3.5 h-5 w-5 text-gray-500" />
+          <div className="searchrow">
+            <div className="searchbox">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M21 21l-4.3-4.3" />
+              </svg>
               <input
                 type="text"
                 placeholder="Search items by name or HSN..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#161920] border border-gray-800 rounded-xl pl-12 pr-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-600 transition shadow-inner"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
+          </div>
+          <nav className="tabs">
+            <button className={"tab" + (activeTab === "inventory" ? " active" : "")} onClick={() => setActiveTab("inventory")}>
+              Inventory
+            </button>
+            <button className={"tab" + (activeTab === "cart" ? " active" : "")} onClick={() => setActiveTab("cart")}>
+              Order List{" "}
+              {cart.length > 0 && <span className="badge cart">{cart.length}</span>}
+            </button>
+            <button className={"tab" + (activeTab === "history" ? " active" : "")} onClick={() => setActiveTab("history")}>
+              History
+            </button>
+          </nav>
+        </div>
+      </header>
 
-            {/* Category Filter Pills */}
-            <div className="flex items-center gap-2 overflow-x-auto pb-4 mb-6 scrollbar-none">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`whitespace-nowrap px-4 py-2 rounded-full text-xs font-semibold transition border ${
-                    selectedCategory === cat
-                      ? 'bg-gray-100 text-gray-900 border-gray-100 shadow'
-                      : 'bg-[#161920] text-gray-400 border-gray-800 hover:border-gray-700 hover:text-white'
-                  }`}
-                >
-                  {cat}
-                </button>
+      <main className="wrap">
+        {!supabaseConfigured && (
+          <div className="banner">
+            Storage isn&apos;t configured yet — set NEXT_PUBLIC_SUPABASE_URL and
+            NEXT_PUBLIC_SUPABASE_ANON_KEY in your environment. Nothing will be saved until then.
+          </div>
+        )}
+
+        {activeTab === "inventory" && (
+          <section>
+            <div className="chiprow">
+              <div className={"chip" + (activeCat === "__all" ? " active" : "")} onClick={() => setActiveCat("__all")}>
+                All
+              </div>
+              {presentCats.map((c) => (
+                <div key={c} className={"chip" + (activeCat === c ? " active" : "")} onClick={() => setActiveCat(c)}>
+                  {c} ({catCounts[c]})
+                </div>
               ))}
             </div>
-
-            {/* Action Bar */}
-            <div className="flex justify-between items-center bg-[#161920] border border-gray-800 p-4 rounded-xl mb-6 shadow-sm">
-              <button 
-                onClick={() => setActiveTab('upload')}
-                className="flex items-center gap-2 text-xs font-semibold text-amber-500 hover:text-amber-400 transition"
-              >
-                <Upload className="h-4 w-4" /> Upload New Bill / Excel to Add Items
+            <div className="toolrow">
+              <button className="addcard" style={{ flex: 1 }} onClick={openAddItem}>
+                + Add a new item to inventory
               </button>
-              <button className="bg-[#1f242d] border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-xs font-medium hover:bg-gray-800 transition">
+              <button
+                className="addcard"
+                style={{ flex: "none", paddingInline: 16 }}
+                onClick={() => supplierDialogRef.current?.showModal()}
+              >
                 Suppliers
               </button>
             </div>
 
-            {/* Item List */}
-            <div className="space-y-4">
-              {filteredItems.map((item) => {
-                const isOutOfStock = item.stock === 0;
-                return (
-                  <div
-                    key={item.id}
-                    className="bg-[#161920] border border-gray-800 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 shadow-md hover:border-gray-700 transition"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3">
-                        <h3 className="font-bold text-base text-white tracking-wide">
-                          {item.skuCode} {item.name}
-                        </h3>
-                        {isOutOfStock && (
-                          <span className="bg-red-950/80 text-red-400 border border-red-900/50 text-[10px] font-bold px-2 py-0.5 rounded tracking-wider uppercase">
-                            Out of Stock
-                          </span>
-                        )}
+            <div className="itemlist">
+              {!itemsLoaded && (
+                <>
+                  <div className="skel" />
+                  <div className="skel" />
+                  <div className="skel" />
+                </>
+              )}
+              {itemsLoaded && visibleItems.length === 0 && (
+                <div className="empty">
+                  <div className="big">🔍</div>
+                  <div>
+                    <b>No items found</b>
+                  </div>
+                  <div style={{ fontSize: 12.5, marginTop: 4 }}>Try a different search, or add this item.</div>
+                </div>
+              )}
+              {itemsLoaded &&
+                visibleItems.map((it) => {
+                  const st = statusFor(it);
+                  const inCart = cart.some((c) => c.id === it.id);
+                  const best = bestRate(it, suppliers);
+                  return (
+                    <div className="item" key={it.id}>
+                      <div className="item-top">
+                        <div>
+                          <div className="item-name">{it.name}</div>
+                          <div className="item-meta">
+                            {it.category}
+                            {it.hsn ? " · HSN " + it.hsn : ""}
+                            {it.times_ordered ? " · ordered " + it.times_ordered + "x before" : ""}
+                          </div>
+                        </div>
+                        <div className={"status " + st.cls}>{st.label}</div>
                       </div>
-                      <p className="text-xs text-gray-400">
-                        Other / General · HSN {item.hsn} · ordered {item.ordersBefore}x before
-                      </p>
-
-                      <div className="flex items-center gap-4 pt-3">
-                        <div className="bg-[#1f242d] border border-gray-800 rounded-xl p-1.5 flex items-center gap-2">
-                          <button
-                            onClick={() => handleStockChange(item.id, -1)}
-                            className="bg-gray-800 hover:bg-gray-700 text-white p-1.5 rounded-lg transition"
-                          >
-                            <Minus className="h-3.5 w-3.5" />
+                      <div className="item-bottom">
+                        <div className="stockctl">
+                          <div>
+                            <label>Stock</label>
+                            <div className="stepper">
+                              <button onClick={() => commitStock(it, Math.max(0, (Number(it.stock) || 0) - 1))}>−</button>
+                              <input
+                                className="num"
+                                type="number"
+                                value={it.stock || 0}
+                                onChange={(e) =>
+                                  setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, stock: Number(e.target.value) } : x)))
+                                }
+                                onBlur={(e) => commitStock(it, Math.max(0, Number(e.target.value) || 0))}
+                              />
+                              <button onClick={() => commitStock(it, (Number(it.stock) || 0) + 1)}>+</button>
+                            </div>
+                          </div>
+                          <div>
+                            <label>Reorder&nbsp;at</label>
+                            <input
+                              className="rlvl num"
+                              type="number"
+                              value={it.reorder_level || 0}
+                              onChange={(e) =>
+                                setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, reorder_level: Number(e.target.value) } : x)))
+                              }
+                              onBlur={(e) => commitReorder(it, Math.max(0, Number(e.target.value) || 0))}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div className="price-block">
+                            <div className="price-amt num">{money(best.rate)}</div>
+                            <div className={"price-supplier" + (best.supplierName ? "" : " unset")}>
+                              {best.supplierName
+                                ? best.comparedCount > 1
+                                  ? best.supplierName + " · cheapest of " + best.comparedCount
+                                  : best.supplierName
+                                : "No supplier rate set"}
+                            </div>
+                          </div>
+                          <button className="cmpbtn" onClick={() => openRateDialog(it)}>
+                            Compare
                           </button>
-                          <span className="w-8 text-center font-bold text-sm">{item.stock}</span>
-                          <button
-                            onClick={() => handleStockChange(item.id, 1)}
-                            className="bg-gray-800 hover:bg-gray-700 text-white p-1.5 rounded-lg transition"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
+                          <button className="addbtn" disabled={inCart} onClick={() => addToCart(it)}>
+                            {inCart ? "Added ✓" : "+ Order"}
                           </button>
                         </div>
-                        <span className="text-xs text-gray-500 font-medium">Reorder at {item.reorderAt}</span>
                       </div>
                     </div>
+                  );
+                })}
+            </div>
+          </section>
+        )}
 
-                    <div className="flex items-center justify-between w-full md:w-auto gap-6 border-t md:border-t-0 pt-4 md:pt-0 border-gray-800">
-                      <div className="text-left md:text-right">
-                        <div className="text-lg font-black text-white">₹{item.price}</div>
-                        <div className="text-[11px] text-gray-500">{item.supplier}</div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button className="bg-[#1f242d] hover:bg-gray-800 border border-gray-700 text-gray-300 px-3.5 py-2 rounded-xl text-xs font-semibold transition">
-                          Compare
-                        </button>
-                        <button className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow transition flex items-center gap-1.5">
-                          + Order
-                        </button>
-                      </div>
+        {activeTab === "cart" && (
+          <section>
+            <div className="itemlist">
+              {cart.map((c) => (
+                <div className="cartitem" key={c.id}>
+                  <div>
+                    <div className="nm">{c.name}</div>
+                    <div className="sub num">
+                      {money(c.rate)} / unit{c.supplierName ? " · from " + c.supplierName : " · supplier not set"}
                     </div>
                   </div>
-                );
-              })}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div className="stepper">
+                      <button onClick={() => changeCartQty(c.id, -1)}>−</button>
+                      <input
+                        className="num"
+                        type="number"
+                        value={c.qty}
+                        onChange={(e) => setCart((prev) => prev.map((x) => (x.id === c.id ? { ...x, qty: Number(e.target.value) } : x)))}
+                        onBlur={(e) => setCartQty(c.id, e.target.value)}
+                      />
+                      <button onClick={() => changeCartQty(c.id, 1)}>+</button>
+                    </div>
+                    <button className="rmv" onClick={() => removeFromCart(c.id)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-          </>
-        ) : activeTab === 'upload' ? (
-          <div className="max-w-xl mx-auto py-12 px-6 bg-[#161920] border border-gray-800 rounded-3xl shadow-xl text-center">
-            <div className="bg-amber-600/10 border border-amber-600/30 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4 text-amber-500">
-              <Upload className="h-8 w-8" />
-            </div>
-            <h2 className="text-xl font-bold text-white mb-2">Upload Excel Spreadsheet or New Bill</h2>
-            <p className="text-xs text-gray-400 mb-8">
-              Upload your wholesale bills or inventory spreadsheets (.xlsx, .csv) to automatically parse items and add them to your stock list.
-            </p>
-
-            <label className="border-2 border-dashed border-gray-700 hover:border-amber-500 bg-[#1f242d]/50 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition group">
-              <FileText className="h-10 w-10 text-gray-500 group-hover:text-amber-500 mb-3 transition" />
-              <span className="text-sm font-semibold text-gray-200">Click to browse or drag & drop files here</span>
-              <span className="text-[11px] text-gray-500 mt-1">Supports CSV, Excel (.xlsx), or PDF Bills</span>
-              <input type="file" accept=".csv, .xlsx, .xls, .pdf, image/*" onChange={handleFileUpload} className="hidden" />
-            </label>
-
-            {uploadStatus && (
-              <div className="mt-6 p-4 bg-amber-950/50 border border-amber-800 rounded-xl text-amber-300 text-xs flex items-center justify-center gap-2">
-                <CheckCircle2 className="h-4 w-4" />
-                {uploadStatus}
+            {cart.length === 0 && (
+              <div className="empty">
+                <div className="big">🧺</div>
+                <div>
+                  <b>Order list is empty</b>
+                </div>
+                <div style={{ fontSize: 12.5, marginTop: 4 }}>Add items from the Inventory tab that need restocking.</div>
               </div>
             )}
-          </div>
-        ) : activeTab === 'orderList' ? (
-          <div className="text-center py-20 bg-[#161920] border border-gray-800 rounded-2xl">
-            <ShoppingCart className="h-12 w-12 text-gray-600 mx-auto mb-3" />
-            <h2 className="text-lg font-bold text-white">Your Order List is Empty</h2>
-            <p className="text-xs text-gray-400 mt-1">Add items that need reordering directly from the inventory tab.</p>
-          </div>
-        ) : (
-          <div className="text-center py-20 bg-[#161920] border border-gray-800 rounded-2xl">
-            <FileText className="h-12 w-12 text-gray-600 mx-auto mb-3" />
-            <h2 className="text-lg font-bold text-white">No Purchase History Yet</h2>
-            <p className="text-xs text-gray-400 mt-1">Previous wholesale imports and transactions will show up here.</p>
-          </div>
+            {cart.length > 0 && (
+              <div className="summary">
+                <div className="summary-row">
+                  <span>{cart.length + (cart.length === 1 ? " item" : " items")}</span>
+                  <span className="num">{cartUnits} units</span>
+                </div>
+                <div className="summary-row total">
+                  <span>Estimated total</span>
+                  <span className="num">{money(cartTotal)}</span>
+                </div>
+                <div className="summary-actions">
+                  <button className="btn ghost" style={{ flex: 1 }} onClick={copyOrder}>
+                    Copy order text
+                  </button>
+                  <button className="btn primary" style={{ flex: 1 }} onClick={placeOrder}>
+                    Mark as placed
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "history" && (
+          <section>
+            {orders.length === 0 && (
+              <div className="empty">
+                <div className="big">📋</div>
+                <div>
+                  <b>No orders placed yet</b>
+                </div>
+                <div style={{ fontSize: 12.5, marginTop: 4 }}>
+                  Orders you mark as placed from the Order List will show up here.
+                </div>
+              </div>
+            )}
+            {orders.map((o) => {
+              const d = new Date(o.placed_at);
+              const units = (o.items || []).reduce((s, c) => s + (Number(c.qty) || 0), 0);
+              const isOpen = openOrderIds.has(o.id);
+              return (
+                <div className={"order" + (isOpen ? " open" : "")} key={o.id}>
+                  <div
+                    className="order-head"
+                    onClick={() =>
+                      setOpenOrderIds((prev) => {
+                        const next = new Set(prev);
+                        next.has(o.id) ? next.delete(o.id) : next.add(o.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <div>
+                      <div className="d">
+                        {isNaN(d.getTime())
+                          ? "Order"
+                          : d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                      <div className="n">
+                        {(o.items || []).length} items · {units} units
+                      </div>
+                    </div>
+                    <div className="t num">{money(o.total)}</div>
+                  </div>
+                  <div className="order-lines">
+                    {(o.items || []).map((c, i) => (
+                      <div className="order-line" key={i}>
+                        <span>
+                          {c.name} ×{c.qty}
+                          {c.supplierName ? " (" + c.supplierName + ")" : ""}
+                        </span>
+                        <span className="num">{money((Number(c.qty) || 0) * (Number(c.rate) || 0))}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
         )}
       </main>
-    </div>
+
+      {/* ---------------- add item dialog ---------------- */}
+      <dialog ref={addDialogRef}>
+        <div className="dlg-head">Add new item</div>
+        <div className="dlg-body">
+          <div className="field">
+            <label>Item name</label>
+            <input
+              placeholder="e.g. Parle G Gold 68.75 G"
+              value={addForm.name}
+              onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </div>
+          <div className="fieldrow">
+            <div className="field">
+              <label>HSN</label>
+              <input
+                placeholder="optional"
+                value={addForm.hsn}
+                onChange={(e) => setAddForm((f) => ({ ...f, hsn: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>Category</label>
+              <select value={addForm.category} onChange={(e) => setAddForm((f) => ({ ...f, category: e.target.value }))}>
+                {CATEGORIES.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="fieldrow">
+            <div className="field">
+              <label>Rate (₹)</label>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="0.00"
+                value={addForm.rate}
+                onChange={(e) => setAddForm((f) => ({ ...f, rate: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>Current stock</label>
+              <input
+                type="number"
+                min={0}
+                step="1"
+                value={addForm.stock}
+                onChange={(e) => setAddForm((f) => ({ ...f, stock: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>Reorder at</label>
+              <input
+                type="number"
+                min={0}
+                step="1"
+                value={addForm.reorder}
+                onChange={(e) => setAddForm((f) => ({ ...f, reorder: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="dlg-actions">
+            <button className="btn ghost" onClick={() => addDialogRef.current?.close()}>
+              Cancel
+            </button>
+            <button className="btn primary" onClick={saveAddItem}>
+              Add item
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      {/* ---------------- rate compare dialog ---------------- */}
+      <dialog ref={rateDialogRef}>
+        <div className="dlg-head">Compare rates{currentItem ? " — " + currentItem.name : ""}</div>
+        <div className="dlg-body">
+          <div>
+            {sortedSuppliers.length === 0 && (
+              <div style={{ fontSize: 12.5, color: "var(--ink-soft)", padding: "6px 0" }}>
+                No suppliers yet — add one below to start comparing.
+              </div>
+            )}
+            {sortedSuppliers.map((s) => (
+              <div className="raterow" key={s.id}>
+                <div className="raterow-name">{s.name}</div>
+                <div className="raterow-inputwrap">
+                  <span className="rs">₹</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="raterow-input"
+                    placeholder="—"
+                    value={rateDialogState[s.id] || ""}
+                    onChange={(e) => setRateDialogState((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                  />
+                </div>
+                <div className="raterow-tag">
+                  {s.id === bestDialogSid && <span className="status ok" style={{ fontSize: 9.5 }}>Cheapest</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="fieldrow" style={{ alignItems: "flex-end" }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Add a supplier</label>
+              <input
+                placeholder="e.g. Metro Cash & Carry"
+                value={rateNewSupplier}
+                onChange={(e) => setRateNewSupplier(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn ghost"
+              onClick={async () => {
+                const rec = await addSupplier(rateNewSupplier);
+                if (rec) {
+                  setRateNewSupplier("");
+                  setRateDialogState((prev) => ({ ...prev, [rec.id]: "" }));
+                }
+              }}
+            >
+              Add
+            </button>
+          </div>
+          <div className="dlg-actions">
+            <button className="btn ghost" onClick={() => rateDialogRef.current?.close()}>
+              Cancel
+            </button>
+            <button className="btn primary" onClick={saveRates}>
+              Save rates
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      {/* ---------------- suppliers dialog ---------------- */}
+      <dialog ref={supplierDialogRef}>
+        <div className="dlg-head">Suppliers</div>
+        <div className="dlg-body">
+          <div>
+            {sortedSuppliers.length === 0 && (
+              <div style={{ fontSize: 12.5, color: "var(--ink-soft)", padding: "6px 0" }}>
+                No suppliers yet — add your first one below.
+              </div>
+            )}
+            {sortedSuppliers.map((s) => (
+              <div className="supplier-row" key={s.id}>
+                <div className="nm">{s.name}</div>
+                <button className="supplier-remove" onClick={() => removeSupplier(s.id)}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="fieldrow" style={{ alignItems: "flex-end" }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Add a supplier</label>
+              <input
+                placeholder="e.g. Metro Cash & Carry"
+                value={supplierNewName}
+                onChange={(e) => setSupplierNewName(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn ghost"
+              onClick={async () => {
+                const rec = await addSupplier(supplierNewName);
+                if (rec) setSupplierNewName("");
+              }}
+            >
+              Add
+            </button>
+          </div>
+          <div className="dlg-actions">
+            <button className="btn primary" style={{ flex: 1 }} onClick={() => supplierDialogRef.current?.close()}>
+              Done
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      <div className={"toast" + (toast ? " show" : "")}>{toast}</div>
+    </>
   );
 }
