@@ -355,52 +355,86 @@ export default function Page() {
     showToast("Item added");
   }
 
-  // Handle Excel / Bill file upload simulation
+  // Handle CSV / Excel File Upload & Row Parsing
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploadStatus(`Processing ${file.name}...`);
-    setTimeout(async () => {
-      const itemName = file.name.toUpperCase().replace(/\.[^/.]+$/, "");
-      const newBase = {
-        name: itemName,
-        hsn: "190590",
-        category: CATEGORIES[0],
-        unit: "EA",
-        rate: 100,
-        stock: 50,
-        reorder_level: 10,
-        total_purchased_qty: 50,
-        total_purchased_amount: 5000,
-        times_ordered: 1,
-        supplier_rates: {},
-        updated_at: new Date().toISOString(),
-      };
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const lines = text.split("\n").filter((line) => line.trim() !== "");
+        
+        let importedCount = 0;
+        const newItemsList: Item[] = [];
 
-      if (!supabaseConfigured) {
-        const localItem = { ...newBase, id: "local-" + Date.now() } as Item;
-        setItems((prev) => [localItem, ...prev]);
-        setUploadStatus(`Successfully imported ${file.name}! Added to Inventory.`);
-        setTimeout(() => setUploadStatus(null), 4000);
-        return;
+        // Skip header row if present
+        const startIndex = lines[0]?.toLowerCase().includes("name") ? 1 : 0;
+
+        for (let i = startIndex; i < lines.length; i++) {
+          const cols = lines[i].split(",").map((c) => c.trim().replace(/^["']|["']$/g, ""));
+          const name = cols[0] || `Item ${i}`;
+          const hsn = cols[1] || "190590";
+          const category = cols[2] && CATEGORIES.includes(cols[2]) ? cols[2] : CATEGORIES[0];
+          const rate = Number(cols[3]) || 100;
+          const stock = Number(cols[4]) || 50;
+          const reorder_level = Number(cols[5]) || 10;
+
+          const itemData = {
+            name,
+            hsn,
+            category,
+            unit: "EA",
+            rate,
+            stock,
+            reorder_level,
+            total_purchased_qty: stock,
+            total_purchased_amount: rate * stock,
+            times_ordered: 1,
+            supplier_rates: {},
+            updated_at: new Date().toISOString(),
+          };
+
+          if (!supabaseConfigured) {
+            newItemsList.push({ ...itemData, id: "local-" + Date.now() + "-" + i } as Item);
+            importedCount++;
+          } else {
+            const idGuess = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") + "-" + Date.now() + "-" + i;
+            const { data, error } = await supabase
+              .from("items")
+              .insert({ ...itemData, id: idGuess })
+              .select()
+              .single();
+            if (!error && data) {
+              newItemsList.push(data as Item);
+              importedCount++;
+            }
+          }
+        }
+
+        if (newItemsList.length > 0) {
+          setItems((prev) => [...newItemsList, ...prev]);
+          setUploadStatus(`Successfully imported ${importedCount} items! Redirecting to Inventory...`);
+          showToast(`Imported ${importedCount} items successfully!`);
+          
+          // Automatically switch back to Inventory tab so the user sees the uploaded data
+          setTimeout(() => {
+            setActiveTab("inventory");
+            setUploadStatus(null);
+          }, 1500);
+        } else {
+          setUploadStatus("No valid rows found in the uploaded file.");
+        }
+      } catch (err) {
+        console.error(err);
+        setUploadStatus("Error parsing file. Please check format.");
       }
+    };
 
-      const idGuess = "bill-" + Date.now();
-      const { data, error } = await supabase
-        .from("items")
-        .insert({ ...newBase, id: idGuess })
-        .select()
-        .single();
-
-      if (error) {
-        setUploadStatus("Failed to save imported bill items to database.");
-      } else if (data) {
-        setItems((prev) => [data as Item, ...prev]);
-        setUploadStatus(`Successfully imported bill ${file.name} into inventory!`);
-      }
-      setTimeout(() => setUploadStatus(null), 4000);
-    }, 1200);
+    reader.readAsText(file);
   }
 
   /* ---------------- rate compare dialog ---------------- */
@@ -681,14 +715,14 @@ export default function Page() {
           <section>
             <div className="empty" style={{ padding: "40px 20px" }}>
               <div className="big">📁</div>
-              <div><b>Upload Bill / Excel Spreadsheet</b></div>
-              <div style={{ fontSize: 13, marginTop: 6, color: "var(--ink-soft)", maxWidth: 400, marginInline: "auto" }}>
-                Upload your supplier bills or inventory spreadsheets (.xlsx, .csv) to automatically import items into your stock book.
+              <div><b>Upload Bill / CSV Spreadsheet</b></div>
+              <div style={{ fontSize: 13, marginTop: 6, color: "var(--ink-soft)", maxWidth: 450, marginInline: "auto" }}>
+                Upload your supplier CSV spreadsheets (Format: <code style={{color: "var(--accent)"}}>Item Name, HSN, Category, Rate, Stock, Reorder Level</code>) to automatically add items into your stock book.
               </div>
               <div style={{ marginTop: 20 }}>
                 <label className="btn primary" style={{ cursor: "pointer", display: "inline-block", padding: "10px 20px" }}>
-                  Browse File
-                  <input type="file" accept=".csv, .xlsx, .xls" onChange={handleFileUpload} style={{ display: "none" }} />
+                  Browse CSV File
+                  <input type="file" accept=".csv, .txt" onChange={handleFileUpload} style={{ display: "none" }} />
                 </label>
               </div>
               {uploadStatus && (
