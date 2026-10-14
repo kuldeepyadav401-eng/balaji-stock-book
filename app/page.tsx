@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { CATEGORIES, CartItem, Item, Order, Supplier } from "@/lib/types";
 
-type Tab = "inventory" | "cart" | "upload" | "history";
+type Tab = "inventory" | "cart" | "upload" | "suppliers" | "history";
 
 function money(n: number) {
   n = Number(n) || 0;
@@ -371,7 +371,6 @@ export default function Page() {
         let importedCount = 0;
         const newItemsList: Item[] = [];
 
-        // Skip header row if present
         const startIndex = lines[0]?.toLowerCase().includes("name") ? 1 : 0;
 
         for (let i = startIndex; i < lines.length; i++) {
@@ -420,7 +419,6 @@ export default function Page() {
           setUploadStatus(`Successfully imported ${importedCount} items! Redirecting to Inventory...`);
           showToast(`Imported ${importedCount} items successfully!`);
           
-          // Automatically switch back to Inventory tab so the user sees the uploaded data
           setTimeout(() => {
             setActiveTab("inventory");
             setUploadStatus(null);
@@ -516,6 +514,9 @@ export default function Page() {
             </button>
             <button className={"tab" + (activeTab === "upload" ? " active" : "")} onClick={() => setActiveTab("upload")}>
               Upload Bill / Excel
+            </button>
+            <button className={"tab" + (activeTab === "suppliers" ? " active" : "")} onClick={() => setActiveTab("suppliers")}>
+              Suppliers Catalog
             </button>
             <button className={"tab" + (activeTab === "history" ? " active" : "")} onClick={() => setActiveTab("history")}>
               History
@@ -730,6 +731,50 @@ export default function Page() {
                   {uploadStatus}
                 </div>
               )}
+            </div>
+          </section>
+        )}
+
+        {activeTab === "suppliers" && (
+          <section>
+            <div className="itemlist">
+              {suppliers.length === 0 && (
+                <div className="empty">
+                  <div className="big">🏢</div>
+                  <div><b>No suppliers added yet</b></div>
+                  <div style={{ fontSize: 12.5, marginTop: 4 }}>Add suppliers from the Inventory tab or set rates via Compare.</div>
+                </div>
+              )}
+              {suppliers.map((s) => {
+                const suppliedItems = items.filter((it) => it.supplier_rates && it.supplier_rates[s.id]?.rate > 0);
+                return (
+                  <div className="item" key={s.id} style={{ marginBottom: 16, padding: 16 }}>
+                    <div className="item-top">
+                      <div>
+                        <div className="item-name" style={{ fontSize: 16, fontWeight: 700 }}>{s.name}</div>
+                        <div className="item-meta">Items provided: {suppliedItems.length} products</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                      {suppliedItems.length === 0 ? (
+                        <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>No items mapped to this supplier yet. Use 'Compare' on any item to assign rates.</div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {suppliedItems.map((it) => {
+                            const rateVal = it.supplier_rates[s.id].rate;
+                            return (
+                              <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, background: "var(--card-sub, #181c25)", padding: "8px 12px", borderRadius: 8 }}>
+                                <span>{it.name}</span>
+                                <span className="num" style={{ fontWeight: 600, color: "var(--accent)" }}>{money(rateVal)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
