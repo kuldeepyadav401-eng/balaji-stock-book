@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { CATEGORIES, CartItem, Item, Order, Supplier } from "@/lib/types";
+import * as XLSX from "xlsx";
 
 type Tab = "inventory" | "cart" | "upload" | "suppliers" | "history";
 
@@ -68,7 +69,6 @@ export default function Page() {
     toastTimer.current = setTimeout(() => setToast(""), 1800);
   }
 
-  /* ---------------- dialogs ---------------- */
   const addDialogRef = useRef<HTMLDialogElement>(null);
   const rateDialogRef = useRef<HTMLDialogElement>(null);
   const supplierDialogRef = useRef<HTMLDialogElement>(null);
@@ -89,7 +89,6 @@ export default function Page() {
   const [supplierNewName, setSupplierNewName] = useState("");
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
-  /* ---------------- data loading + realtime ---------------- */
   useEffect(() => {
     if (!supabaseConfigured) {
       setItemsLoaded(true);
@@ -141,7 +140,6 @@ export default function Page() {
     };
   }, []);
 
-  /* ---------------- category chips ---------------- */
   const catCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     items.forEach((it) => (counts[it.category] = (counts[it.category] || 0) + 1));
@@ -149,7 +147,6 @@ export default function Page() {
   }, [items]);
   const presentCats = CATEGORIES.filter((c) => catCounts[c]);
 
-  /* ---------------- filtered item list ---------------- */
   const visibleItems = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     let rows = items.filter((it) => {
@@ -161,7 +158,6 @@ export default function Page() {
     return rows;
   }, [items, activeCat, searchTerm]);
 
-  /* ---------------- item mutations ---------------- */
   async function commitStock(it: Item, val: number) {
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, stock: val } : x)));
     if (!supabaseConfigured) return;
@@ -195,7 +191,6 @@ export default function Page() {
     showToast(error ? "Could not save rates — try again" : "Rates saved");
   }
 
-  /* ---------------- cart ---------------- */
   async function writeCart(newItems: CartItem[]) {
     setCart(newItems);
     if (!supabaseConfigured) return;
@@ -275,7 +270,6 @@ export default function Page() {
     }
   }
 
-  /* ---------------- suppliers ---------------- */
   async function addSupplier(rawName: string): Promise<Supplier | null> {
     const name = (rawName || "").trim();
     if (!name) return null;
@@ -310,7 +304,6 @@ export default function Page() {
     if (error) showToast("Could not remove supplier");
   }
 
-  /* ---------------- add item dialog ---------------- */
   function openAddItem() {
     setAddForm({ name: "", hsn: "", category: CATEGORIES[0], rate: "", stock: "0", reorder: "3" });
     addDialogRef.current?.showModal();
@@ -321,7 +314,7 @@ export default function Page() {
       showToast("Enter an item name");
       return;
     }
-    const base = {
+lg    const base = {
       name,
       hsn: addForm.hsn.trim(),
       category: addForm.category,
@@ -355,7 +348,7 @@ export default function Page() {
     showToast("Item added");
   }
 
-  // Handle CSV / Excel File Upload & Row Parsing
+  // Handle Excel (.xlsx, .xls) and CSV File Upload & Row Parsing
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -365,19 +358,27 @@ export default function Page() {
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const text = event.target?.result as string;
-        const lines = text.split("\n").filter((line) => line.trim() !== "");
+        const dataBuffer = new Uint8Array(event.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(dataBuffer, { type: "array" });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Convert sheet to JSON rows
+        const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
         
         let importedCount = 0;
         const newItemsList: Item[] = [];
 
-        const startIndex = lines[0]?.toLowerCase().includes("name") ? 1 : 0;
+        const startIndex = rows[0]?.[0]?.toString().toLowerCase().includes("name") ? 1 : 0;
 
-        for (let i = startIndex; i < lines.length; i++) {
-          const cols = lines[i].split(",").map((c) => c.trim().replace(/^["']|["']$/g, ""));
-          const name = cols[0] || `Item ${i}`;
-          const hsn = cols[1] || "190590";
-          const category = cols[2] && CATEGORIES.includes(cols[2]) ? cols[2] : CATEGORIES[0];
+        for (let i = startIndex; i < rows.length; i++) {
+          const cols = rows[i];
+          if (!cols || cols.length === 0 || !cols[0]) continue;
+
+          const name = String(cols[0] || `Item ${i}`).trim();
+          const hsn = String(cols[1] || "190590").trim();
+          const categoryInput = String(cols[2] || "").trim();
+          const category = CATEGORIES.includes(categoryInput) ? categoryInput : CATEGORIES[0];
           const rate = Number(cols[3]) || 100;
           const stock = Number(cols[4]) || 50;
           const reorder_level = Number(cols[5]) || 10;
@@ -428,14 +429,13 @@ export default function Page() {
         }
       } catch (err) {
         console.error(err);
-        setUploadStatus("Error parsing file. Please check format.");
+        setUploadStatus("Error parsing Excel file. Please check format.");
       }
     };
 
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   }
 
-  /* ---------------- rate compare dialog ---------------- */
   function openRateDialog(it: Item) {
     setRateDialogItemId(it.id);
     const rates = it.supplier_rates || {};
@@ -716,14 +716,14 @@ export default function Page() {
           <section>
             <div className="empty" style={{ padding: "40px 20px" }}>
               <div className="big">📁</div>
-              <div><b>Upload Bill / CSV Spreadsheet</b></div>
-              <div style={{ fontSize: 13, marginTop: 6, color: "var(--ink-soft)", maxWidth: 450, marginInline: "auto" }}>
-                Upload your supplier CSV spreadsheets (Format: <code style={{color: "var(--accent)"}}>Item Name, HSN, Category, Rate, Stock, Reorder Level</code>) to automatically add items into your stock book.
+              <div><b>Upload Excel (.xlsx, .xls) or CSV Spreadsheet</b></div>
+              <div style={{ fontSize: 13, marginTop: 6, color: "var(--ink-soft)", maxWidth: 480, marginInline: "auto" }}>
+                Upload your supplier Excel or CSV files (Columns: <code style={{color: "var(--accent)"}}>Item Name, HSN, Category, Rate, Stock, Reorder Level</code>) to automatically import items.
               </div>
               <div style={{ marginTop: 20 }}>
                 <label className="btn primary" style={{ cursor: "pointer", display: "inline-block", padding: "10px 20px" }}>
-                  Browse CSV File
-                  <input type="file" accept=".csv, .txt" onChange={handleFileUpload} style={{ display: "none" }} />
+                  Browse Excel / CSV File
+                  <input type="file" accept=".xlsx, .xls, .csv, .txt" onChange={handleFileUpload} style={{ display: "none" }} />
                 </label>
               </div>
               {uploadStatus && (
@@ -838,7 +838,6 @@ export default function Page() {
         )}
       </main>
 
-      {/* ---------------- add item dialog ---------------- */}
       <dialog ref={addDialogRef}>
         <div className="dlg-head">Add new item</div>
         <div className="dlg-body">
@@ -912,7 +911,6 @@ export default function Page() {
         </div>
       </dialog>
 
-      {/* ---------------- rate compare dialog ---------------- */}
       <dialog ref={rateDialogRef}>
         <div className="dlg-head">Compare rates{currentItem ? " — " + currentItem.name : ""}</div>
         <div className="dlg-body">
@@ -976,7 +974,6 @@ export default function Page() {
         </div>
       </dialog>
 
-      {/* ---------------- suppliers dialog ---------------- */}
       <dialog ref={supplierDialogRef}>
         <div className="dlg-head">Suppliers</div>
         <div className="dlg-body">
