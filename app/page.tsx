@@ -53,30 +53,6 @@ const INITIAL_ITEMS: InventoryItem[] = [
     price: 48.18,
     supplier: 'LOTS Wholesale',
   },
-  {
-    id: '4',
-    skuCode: '77',
-    name: 'SANTOOR SANDAL & TURMERIC SOAP 125 G PK4',
-    category: 'Soap',
-    hsn: '34011190',
-    ordersBefore: 1,
-    stock: 0,
-    reorderAt: 2,
-    price: 173.47,
-    supplier: 'LOTS Wholesale',
-  },
-  {
-    id: '5',
-    skuCode: 'ACT II',
-    name: 'ACT II IPC CHILLI SURPRISE 40 G',
-    category: 'Snacks & Candy',
-    hsn: '20081990',
-    ordersBefore: 1,
-    stock: 0,
-    reorderAt: 18,
-    price: 8.8,
-    supplier: 'LOTS Wholesale',
-  },
 ];
 
 const CATEGORIES = [
@@ -130,7 +106,7 @@ export default function BalajiStockBook() {
       };
 
       setItems([newItem, ...items]);
-      setUploadStatus(`Successfully imported bill/items from ${file.name}!`);
+      setUploadStatus(`Successfully imported bill/items from ${file.name}! Added to Inventory.`);
       setTimeout(() => setUploadStatus(null), 4000);
     }, 1200);
   };
@@ -150,7 +126,7 @@ export default function BalajiStockBook() {
   }, [items, searchQuery, selectedCategory]);
 
   return (
-    <div className="min-h-screen bg-[#0f1115] text-gray-100 font-sans antialiased selection:bg-amber-500 selection:text-white">
+    <div className="min-h-screen bg-[#0f1115] text-gray-100 font-sans antialiased">
       {/* Header */}
       <header className="border-b border-gray-800 bg-[#161920] px-6 py-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -168,11 +144,11 @@ export default function BalajiStockBook() {
             </div>
           </div>
 
-          {/* Navigation Tabs */}
+          {/* Navigation Tabs including Upload */}
           <div className="flex bg-[#1f242d] p-1 rounded-xl border border-gray-800 w-full md:w-auto flex-wrap gap-1">
             <button
               onClick={() => setActiveTab('inventory')}
-              className={`flex-1 md:flex-none px-5 py-2 rounded-lg text-sm font-medium transition ${
+              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
                 activeTab === 'inventory' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -180,7 +156,7 @@ export default function BalajiStockBook() {
             </button>
             <button
               onClick={() => setActiveTab('orderList')}
-              className={`flex-1 md:flex-none px-5 py-2 rounded-lg text-sm font-medium transition ${
+              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
                 activeTab === 'orderList' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -188,15 +164,15 @@ export default function BalajiStockBook() {
             </button>
             <button
               onClick={() => setActiveTab('upload')}
-              className={`flex-1 md:flex-none px-5 py-2 rounded-lg text-sm font-medium transition flex items-center justify-center gap-1.5 ${
+              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 ${
                 activeTab === 'upload' ? 'bg-amber-600 text-white shadow' : 'text-amber-400 hover:bg-amber-950/40'
               }`}
             >
-              <Upload className="h-4 w-4" /> Upload Bill / Excel
+              <Upload className="h-3.5 w-3.5" /> Upload Bill / Excel
             </button>
             <button
               onClick={() => setActiveTab('history')}
-              className={`flex-1 md:flex-none px-5 py-2 rounded-lg text-sm font-medium transition ${
+              className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-semibold transition ${
                 activeTab === 'history' ? 'bg-[#2b313b] text-white shadow' : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -243,9 +219,9 @@ export default function BalajiStockBook() {
             <div className="flex justify-between items-center bg-[#161920] border border-gray-800 p-4 rounded-xl mb-6 shadow-sm">
               <button 
                 onClick={() => setActiveTab('upload')}
-                className="flex items-center gap-2 text-sm font-semibold text-amber-500 hover:text-amber-400 transition"
+                className="flex items-center gap-2 text-xs font-semibold text-amber-500 hover:text-amber-400 transition"
               >
-                <Plus className="h-4 w-4" /> Upload New Bill / Excel to Add Items
+                <Upload className="h-4 w-4" /> Upload New Bill / Excel to Add Items
               </button>
               <button className="bg-[#1f242d] border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-xs font-medium hover:bg-gray-800 transition">
                 Suppliers
@@ -256,27 +232,21 @@ export default function BalajiStockBook() {
             <div className="space-y-4">
               {filteredItems.map((item) => {
                 const isOutOfStock = item.stock === 0;
-                const isLowStock = item.stock > 0 && item.stock <= item.reorderAt;
                 return (
                   <div
                     key={item.id}
                     className="bg-[#161920] border border-gray-800 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 shadow-md hover:border-gray-700 transition"
                   >
-                    {/* Left Details */}
                     <div className="space-y-1">
                       <div className="flex items-center gap-3">
                         <h3 className="font-bold text-base text-white tracking-wide">
                           {item.skuCode} {item.name}
                         </h3>
-                        {isOutOfStock ? (
+                        {isOutOfStock && (
                           <span className="bg-red-950/80 text-red-400 border border-red-900/50 text-[10px] font-bold px-2 py-0.5 rounded tracking-wider uppercase">
                             Out of Stock
                           </span>
-                        ) : isLowStock ? (
-                          <span className="bg-amber-950/80 text-amber-400 border border-amber-900/50 text-[10px] font-bold px-2 py-0.5 rounded tracking-wider uppercase">
-                            Low Stock
-                          </span>
-                        ) : null}
+                        )}
                       </div>
                       <p className="text-xs text-gray-400">
                         Other / General · HSN {item.hsn} · ordered {item.ordersBefore}x before
@@ -302,7 +272,6 @@ export default function BalajiStockBook() {
                       </div>
                     </div>
 
-                    {/* Right Price & Actions */}
                     <div className="flex items-center justify-between w-full md:w-auto gap-6 border-t md:border-t-0 pt-4 md:pt-0 border-gray-800">
                       <div className="text-left md:text-right">
                         <div className="text-lg font-black text-white">₹{item.price}</div>
@@ -334,7 +303,7 @@ export default function BalajiStockBook() {
             </p>
 
             <label className="border-2 border-dashed border-gray-700 hover:border-amber-500 bg-[#1f242d]/50 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition group">
-              <FileText className="h-10 w-10 text-gray-500 group-weight group-hover:text-amber-500 mb-3 transition" />
+              <FileText className="h-10 w-10 text-gray-500 group-hover:text-amber-500 mb-3 transition" />
               <span className="text-sm font-semibold text-gray-200">Click to browse or drag & drop files here</span>
               <span className="text-[11px] text-gray-500 mt-1">Supports CSV, Excel (.xlsx), or PDF Bills</span>
               <input type="file" accept=".csv, .xlsx, .xls, .pdf, image/*" onChange={handleFileUpload} className="hidden" />
